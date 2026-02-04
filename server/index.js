@@ -2,25 +2,42 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const Groq = require("groq-sdk");
+const { GeminiProvider } = require("./geminiProvider");
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// AI Provider Selection: "groq" or "gemini"
+const AI_PROVIDER = process.env.AI_PROVIDER || "gemini";
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Initialize Groq API
-if (
-  !process.env.GROQ_API_KEY ||
-  process.env.GROQ_API_KEY === "PLACEHOLDER_API_KEY"
-) {
-  console.warn("⚠️ WARNING: GROQ_API_KEY is missing or invalid in server/.env");
-}
+// Initialize AI Providers
+let groq = null;
+let gemini = null;
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+if (AI_PROVIDER === "groq") {
+  if (
+    !process.env.GROQ_API_KEY ||
+    process.env.GROQ_API_KEY === "PLACEHOLDER_API_KEY"
+  ) {
+    console.warn(
+      "⚠️ WARNING: GROQ_API_KEY is missing or invalid in server/.env",
+    );
+  }
+  groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  console.log("🤖 Using AI Provider: GROQ (llama-3.1-8b-instant)");
+} else {
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn("⚠️ WARNING: GEMINI_API_KEY is missing in server/.env");
+  }
+  gemini = new GeminiProvider(process.env.GEMINI_API_KEY);
+  console.log("🤖 Using AI Provider: GEMINI (gemini-2.0-flash)");
+}
 
 const SYSTEM_INSTRUCTION = `
 {
@@ -316,25 +333,33 @@ app.post("/api/chat", async (req, res) => {
       content: `[SessionID: ${safeSessionId}] [Turn: ${conversationTurn}] Incoming Message: "${message}". Please respond in json.`,
     });
 
-    // 3. Call Groq
+    // 3. Call AI Provider (Groq or Gemini)
     console.log(
-      `[${safeSessionId}] Turn ${conversationTurn}: Processing message via Groq...`,
+      `[${safeSessionId}] Turn ${conversationTurn}: Processing message via ${AI_PROVIDER.toUpperCase()}...`,
     );
 
-    const completion = await groq.chat.completions.create({
-      messages: messages,
-      model: "llama-3.1-8b-instant",
-      temperature: 0.7,
-      max_completion_tokens: 1024,
-      top_p: 1,
-      stream: false,
-      response_format: { type: "json_object" },
-    });
+    let completion;
+
+    if (AI_PROVIDER === "groq") {
+      // Use Groq API
+      completion = await groq.chat.completions.create({
+        messages: messages,
+        model: "llama-3.1-8b-instant",
+        temperature: 0.7,
+        max_completion_tokens: 1024,
+        top_p: 1,
+        stream: false,
+        response_format: { type: "json_object" },
+      });
+    } else {
+      // Use Gemini API
+      completion = await gemini.chat(SYSTEM_INSTRUCTION, messages);
+    }
 
     const responseText = completion.choices[0].message.content;
 
     if (!responseText) {
-      throw new Error("Empty response from Groq");
+      throw new Error(`Empty response from ${AI_PROVIDER}`);
     }
 
     const jsonResponse = JSON.parse(responseText);

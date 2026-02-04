@@ -40,7 +40,9 @@ export const handleApiRequest = async (
   }
 
   try {
-    const response = await fetch(process.env.BACKEND_URL!, {
+    const API_URL =
+      import.meta.env.VITE_BACKEND_URL || "http://localhost:3000/api/chat";
+    const response = await fetch(API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

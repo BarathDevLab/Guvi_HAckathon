@@ -27,7 +27,11 @@ export const handleApiRequest = async (
 ): Promise<ApiResponse<HoneyPotResponse>> => {
   // Log the activity to console
   console.group("🔌 calling Backend API");
-  console.log("Target: http://localhost:3000/api/chat");
+
+  const API_URL =
+    import.meta.env.VITE_BACKEND_URL || "http://localhost:3000/api/chat";
+
+  console.log("Target:", API_URL);
   console.groupEnd();
 
   // 1. HEADER VALIDATION (Client-side pre-check, though backend handles the real check)
@@ -40,8 +44,6 @@ export const handleApiRequest = async (
   }
 
   try {
-    const API_URL =
-      import.meta.env.VITE_BACKEND_URL || "http://localhost:3000/api/chat";
     const response = await fetch(API_URL, {
       method: "POST",
       headers: {

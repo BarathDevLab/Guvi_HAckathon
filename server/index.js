@@ -158,6 +158,11 @@ const { initDB, query } = require("./db");
 console.log("🔌 Connecting to Database...");
 initDB();
 
+// Health Check Endpoint
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
 // Routes
 app.get("/api/history", async (req, res) => {
   const { sessionId } = req.query;

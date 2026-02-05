@@ -39,6 +39,70 @@ if (AI_PROVIDER === "groq") {
   console.log("🤖 Using AI Provider: GEMINI (gemma-3-27b-it)");
 }
 
+// GUVI Hackathon Callback Endpoint
+const GUVI_CALLBACK_URL =
+  "https://hackathon.guvi.in/api/updateHoneyPotFinalResult";
+
+/**
+ * Send final extracted intelligence to GUVI evaluation endpoint
+ * Called when readyForFinalCallback is true
+ */
+async function sendGuviCallback(sessionId, internalLogic, totalMessages) {
+  try {
+    const payload = {
+      sessionId: sessionId,
+      scamDetected: internalLogic.scamDetected || false,
+      totalMessagesExchanged: totalMessages,
+      extractedIntelligence: {
+        bankAccounts: internalLogic.extractedIntelligence?.bankAccounts || [],
+        upiIds: internalLogic.extractedIntelligence?.upiIds || [],
+        phishingLinks: internalLogic.extractedIntelligence?.phishingLinks || [],
+        phoneNumbers: internalLogic.extractedIntelligence?.phoneNumbers || [],
+        cryptoWallets: internalLogic.extractedIntelligence?.cryptoWallets || [],
+        emailAddresses:
+          internalLogic.extractedIntelligence?.emailAddresses || [],
+        suspiciousKeywords:
+          internalLogic.extractedIntelligence?.suspiciousKeywords || [],
+      },
+      agentNotes: internalLogic.agentNotes || "Scam engagement completed",
+    };
+
+    console.log(
+      `\n🔔 [GUVI CALLBACK] Sending final result for session: ${sessionId}`,
+    );
+    console.log(`   Scam Detected: ${payload.scamDetected}`);
+    console.log(`   Total Messages: ${payload.totalMessagesExchanged}`);
+    console.log(
+      `   Intelligence:`,
+      JSON.stringify(payload.extractedIntelligence, null, 2),
+    );
+
+    const response = await fetch(GUVI_CALLBACK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      console.log(`✅ [GUVI CALLBACK] Success:`, result);
+      return { success: true, result };
+    } else {
+      const errorText = await response.text();
+      console.error(
+        `❌ [GUVI CALLBACK] Failed (${response.status}):`,
+        errorText,
+      );
+      return { success: false, error: errorText };
+    }
+  } catch (error) {
+    console.error(`❌ [GUVI CALLBACK] Error:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 const SYSTEM_INSTRUCTION = `
 {
   "systemPrompt": {
@@ -281,10 +345,32 @@ const SYSTEM_INSTRUCTION = `
 }
 `;
 
+const { initDB, query } = require("./db");
+
+// Initialize Database
+console.log("🔌 Connecting to Database...");
+initDB();
+
 // Routes
+app.get("/api/history", async (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.json([]);
+
+  try {
+    const result = await query(
+      "SELECT role, content, timestamp FROM conversations WHERE session_id = $1 ORDER BY timestamp ASC",
+      [sessionId],
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Failed to fetch history:", err);
+    res.status(500).json({ error: "Failed to fetch history" });
+  }
+});
+
 app.post("/api/chat", async (req, res) => {
   try {
-    // 1. Validate API Key
+    // Validate API Key
     const providedKey = req.headers["x-api-key"];
     const VALID_SECRET =
       process.env.HONEYPOT_SECRET_KEY || "YOUR_SECRET_API_KEY";
@@ -298,17 +384,65 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    const { message, history, sessionId } = req.body;
+    const {
+      message,
+      sessionId,
+      conversationHistory: inputHistory,
+      metadata,
+    } = req.body;
 
-    if (!message) {
-      return res.status(400).json({ error: "Message is required" });
+    // Support both old format (message: string) and new format (message: {text, sender, timestamp})
+    let messageText;
+    if (typeof message === "object" && message !== null && message.text) {
+      messageText = message.text;
+    } else if (typeof message === "string") {
+      messageText = message;
+    } else {
+      return res.status(400).json({
+        status: "error",
+        reply:
+          "Message is required. Expected: string or { text, sender, timestamp }",
+      });
     }
 
-    // Generate safe session ID and track conversation turn
+    // Generate safe session ID
     const safeSessionId = sessionId || `session-${Date.now()}`;
-    const conversationTurn = (history?.length || 0) + 1;
 
-    // 2. Prepare Chat History for Groq (OpenAI format)
+    console.log(
+      `\n[${safeSessionId}] New message: "${messageText.substring(0, 50)}..."`,
+    );
+    if (metadata) {
+      console.log(
+        `[${safeSessionId}] Metadata: channel=${metadata.channel}, language=${metadata.language}`,
+      );
+    }
+
+    // Save user message to DB
+    try {
+      await query(
+        "INSERT INTO conversations (session_id, role, content) VALUES ($1, $2, $3)",
+        [safeSessionId, "user", messageText],
+      );
+    } catch (dbErr) {
+      console.error("Failed to save user message:", dbErr);
+    }
+
+    // Fetch history from DB
+    let dbHistory = [];
+    try {
+      const result = await query(
+        "SELECT role, content FROM conversations WHERE session_id = $1 ORDER BY timestamp ASC",
+        [safeSessionId],
+      );
+      dbHistory = result.rows;
+    } catch (dbErr) {
+      console.error("Failed to fetch history:", dbErr);
+    }
+
+    // Track conversation turn
+    const conversationTurn = Math.ceil(dbHistory.length / 2);
+
+    // Prepare Chat History for AI Provider
     let messages = [
       {
         role: "system",
@@ -318,24 +452,20 @@ app.post("/api/chat", async (req, res) => {
       },
     ];
 
-    if (history && Array.isArray(history)) {
-      history.forEach((msg) => {
-        messages.push({
-          role: msg.sender === "user" ? "user" : "assistant",
-          content: msg.text,
-        });
+    // Add retrieved history
+    dbHistory.forEach((msg) => {
+      messages.push({
+        role: msg.role === "user" ? "user" : "assistant",
+        content: msg.content,
       });
-    }
-
-    // Add current user message
-    messages.push({
-      role: "user",
-      content: `[SessionID: ${safeSessionId}] [Turn: ${conversationTurn}] Incoming Message: "${message}". Please respond in json.`,
     });
 
-    // 3. Call AI Provider (Groq or Gemini)
+    // NOTE: 'dbHistory' already contains the latest user message because we inserted it above.
+    // So 'messages' is now complete.
+
+    // Call AI Provider
     console.log(
-      `[${safeSessionId}] Turn ${conversationTurn}: Processing message via ${AI_PROVIDER.toUpperCase()}...`,
+      `[${safeSessionId}] Turn ${conversationTurn}: Processing via ${AI_PROVIDER.toUpperCase()}...`,
     );
 
     let completion;
@@ -362,35 +492,132 @@ app.post("/api/chat", async (req, res) => {
       throw new Error(`Empty response from ${AI_PROVIDER}`);
     }
 
-    const jsonResponse = JSON.parse(responseText);
+    let jsonResponse;
+    try {
+      jsonResponse = JSON.parse(responseText);
+    } catch (parseError) {
+      console.warn(
+        "⚠️ AI returned invalid JSON. Attempting to extract reply...",
+      );
 
-    // Return the specific structure
-    res.json(jsonResponse);
-  } catch (error) {
-    console.error("Server Error details:", JSON.stringify(error, null, 2));
-    res.status(500).json({
-      platform_reply: {
-        status: "error",
-        reply:
-          "I'm having a little trouble hearing you. Could you say that again?",
-      },
-      internal_logic: {
-        scamDetected: false,
-        sessionId: req.body.sessionId || "unknown",
-        conversationTurn: (req.body.history?.length || 0) + 1,
-        readyForFinalCallback: false,
-        extractedIntelligence: {
-          cryptoWallets: [],
-          bankAccounts: [],
-          upiIds: [],
-          phishingLinks: [],
-          phoneNumbers: [],
-          emailAddresses: [],
-          suspiciousKeywords: [],
-          scamType: "unknown",
+      // Try to extract reply text before any JSON
+      let cleanReply = responseText;
+
+      // Remove any JSON block that might be appended
+      const jsonStartIndex = responseText.indexOf("\n{");
+      if (jsonStartIndex > 0) {
+        cleanReply = responseText.substring(0, jsonStartIndex).trim();
+      }
+
+      // Also try to remove "json" keyword if present
+      cleanReply = cleanReply.replace(/\n*json\s*$/i, "").trim();
+
+      // If still empty, use full response
+      if (!cleanReply) {
+        cleanReply = responseText;
+      }
+
+      jsonResponse = {
+        platform_reply: {
+          status: "success",
+          reply: cleanReply,
         },
-        agentNotes: "Server encountered an error: " + error.message,
+        internal_logic: {
+          scamDetected: false,
+          sessionId: safeSessionId,
+          conversationTurn: conversationTurn,
+          readyForFinalCallback: false,
+          extractedIntelligence: {},
+        },
+      };
+    }
+
+    const agentReply =
+      jsonResponse.platform_reply?.reply || jsonResponse.reply || responseText;
+
+    // Save agent response to DB
+    if (agentReply) {
+      try {
+        await query(
+          "INSERT INTO conversations (session_id, role, content) VALUES ($1, $2, $3)",
+          [safeSessionId, "assistant", agentReply],
+        );
+      } catch (dbErr) {
+        console.error("Failed to save agent reply:", dbErr);
+      }
+    }
+
+    // Save extracted intelligence to DB
+    try {
+      await query(
+        "INSERT INTO intelligence (session_id, data) VALUES ($1, $2)",
+        [safeSessionId, JSON.stringify(jsonResponse.internal_logic)],
+      );
+    } catch (dbErr) {
+      console.error("Failed to save intelligence:", dbErr);
+    }
+
+    // GUVI Callback - Send final result when ready
+    if (jsonResponse.internal_logic?.readyForFinalCallback === true) {
+      // Get total message count
+      let totalMessages = 0;
+      try {
+        const countResult = await query(
+          "SELECT COUNT(*) as count FROM conversations WHERE session_id = $1",
+          [safeSessionId],
+        );
+        totalMessages = parseInt(countResult.rows[0]?.count || 0);
+      } catch (err) {
+        totalMessages = conversationTurn * 2; // Fallback estimate
+      }
+
+      // Send callback (async, don't wait for response)
+      sendGuviCallback(
+        safeSessionId,
+        jsonResponse.internal_logic,
+        totalMessages,
+      );
+    }
+
+    // Fetch updated history to return
+    let updatedHistory = [];
+    try {
+      const result = await query(
+        "SELECT role, content, timestamp FROM conversations WHERE session_id = $1 ORDER BY timestamp ASC",
+        [safeSessionId],
+      );
+      updatedHistory = result.rows.map((row) => ({
+        sender: row.role === "assistant" ? "user" : "scammer",
+        text: row.content,
+        timestamp: new Date(row.timestamp).getTime(),
+      }));
+    } catch (dbErr) {
+      console.error("Failed to fetch updated history:", dbErr);
+    }
+
+    // Return the response with internal_logic for dashboard
+    console.log(
+      `[${safeSessionId}] Reply: "${agentReply.substring(0, 60)}..."`,
+    );
+    res.json({
+      status: "success",
+      reply: agentReply,
+      conversationHistory: updatedHistory,
+      internal_logic: jsonResponse.internal_logic || {
+        scamDetected: false,
+        sessionId: safeSessionId,
+        readyForFinalCallback: false,
+        extractedIntelligence: {},
+        agentNotes: "Processing...",
       },
+    });
+  } catch (error) {
+    console.error("Server Error details:", error);
+    res.status(500).json({
+      status: "error",
+      reply:
+        "I'm having a little trouble hearing you. Could you say that again?",
+      conversationHistory: [],
     });
   }
 });

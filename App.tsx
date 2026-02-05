@@ -24,11 +24,76 @@ const INITIAL_INTERNAL_STATE: InternalLogicState = {
 
 const App: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [internalState, setInternalState] = useState<InternalLogicState>(
-    INITIAL_INTERNAL_STATE,
-  );
+
+  // Initialize state with lazy initializer to check localStorage first
+  const [internalState, setInternalState] = useState<InternalLogicState>(() => {
+    const savedSessionId = localStorage.getItem("honeyPotSessionId");
+    return {
+      ...INITIAL_INTERNAL_STATE,
+      sessionId:
+        savedSessionId ||
+        `SESS-${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
+    };
+  });
+
   const [agentStatus, setAgentStatus] = useState<AgentStatus>(AgentStatus.IDLE);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Effect to save session ID whenever it changes
+  React.useEffect(() => {
+    if (internalState.sessionId) {
+      localStorage.setItem("honeyPotSessionId", internalState.sessionId);
+    }
+  }, [internalState.sessionId]);
+
+  // Load history on mount or session change
+  React.useEffect(() => {
+    if (!internalState.sessionId) return;
+
+    // Fetch history
+    const fetchHistory = async () => {
+      try {
+        setIsLoading(true);
+        const API_URL =
+          import.meta.env.VITE_BACKEND_URL?.replace(
+            "/api/chat",
+            "/api/history",
+          ) || "http://localhost:3000/api/history";
+        const res = await fetch(
+          `${API_URL}?sessionId=${internalState.sessionId}`,
+        );
+        if (res.ok) {
+          const data = await res.json();
+          // Convert to ChatMessage format
+          const historyMsgs: ChatMessage[] = data.map(
+            (msg: any, index: number) => ({
+              id: `hist-${index}`,
+              sender: msg.role === "user" ? "user" : "agent",
+              text: msg.content,
+              timestamp: new Date(msg.timestamp),
+            }),
+          );
+          setMessages(historyMsgs);
+        }
+      } catch (err) {
+        console.error("Failed to load history:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchHistory();
+  }, [internalState.sessionId]);
+
+  const handleNewChat = () => {
+    localStorage.removeItem("honeyPotSessionId");
+    setMessages([]);
+    setInternalState({
+      ...INITIAL_INTERNAL_STATE,
+      sessionId: `SESS-${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
+    });
+    setAgentStatus(AgentStatus.IDLE);
+  };
 
   const handleUserMessage = async (text: string) => {
     // 1. Add User (Scammer) Message to UI
@@ -43,24 +108,18 @@ const App: React.FC = () => {
     setIsLoading(true);
     setAgentStatus(AgentStatus.ANALYZING);
 
-    // 2. CALL THE REST API (Simulated)
-    // We strictly use the API layer with the required Headers.
     try {
       const apiResponse = await handleApiRequest({
         method: "POST",
         headers: {
-          // WE INJECT THE SECRET KEY HERE
-          // In a real scenario, this is done by the client (Postman/Curl/Frontend App)
           "x-api-key": "YOUR_SECRET_API_KEY",
         },
         body: {
           message: text,
-          history: messages,
           sessionId: internalState.sessionId,
         },
       });
 
-      // 3. Handle API Errors (e.g., 401 Unauthorized)
       if (apiResponse.status !== 200 || !apiResponse.data) {
         throw new Error(
           apiResponse.error || `API Error: ${apiResponse.status}`,
@@ -69,81 +128,106 @@ const App: React.FC = () => {
 
       const responseData = apiResponse.data;
 
-      // 4. Update Application State from API Response - MERGE intelligence data
-      setInternalState((prevState) => {
-        const newLogic = responseData.internal_logic;
-        const prevIntel = prevState.extractedIntelligence || {};
-        const newIntel = newLogic.extractedIntelligence || {};
+      // Update Application State - MERGE intelligence data (only if internal_logic exists)
+      const newLogic: Partial<InternalLogicState> =
+        responseData.internal_logic || {};
 
-        // Helper to merge arrays and remove duplicates
-        const mergeArrays = (prev: string[] = [], next: string[] = []) => {
-          return [...new Set([...prev, ...next])];
-        };
+      if (newLogic && Object.keys(newLogic).length > 0) {
+        setInternalState((prevState) => {
+          const prevIntel = prevState.extractedIntelligence || {};
+          const newIntel = newLogic.extractedIntelligence || {};
 
-        // Helper to merge crypto wallets (by address)
-        const mergeCryptoWallets = (prev: any[] = [], next: any[] = []) => {
-          const map = new Map();
-          [...prev, ...next].forEach((wallet) => {
-            if (wallet?.address) map.set(wallet.address, wallet);
-          });
-          return Array.from(map.values());
-        };
+          // Helper to merge arrays and remove duplicates
+          const mergeArrays = (prev: string[] = [], next: string[] = []) => {
+            return [...new Set([...prev, ...next])];
+          };
 
-        return {
-          ...newLogic,
-          sessionId: prevState.sessionId, // Keep original session ID
-          scamDetected: prevState.scamDetected || newLogic.scamDetected, // Once detected, stay detected
-          extractedIntelligence: {
-            cryptoWallets: mergeCryptoWallets(
-              prevIntel.cryptoWallets,
-              newIntel.cryptoWallets,
-            ),
-            bankAccounts: mergeArrays(
-              prevIntel.bankAccounts,
-              newIntel.bankAccounts,
-            ),
-            upiIds: mergeArrays(prevIntel.upiIds, newIntel.upiIds),
-            phishingLinks: mergeArrays(
-              prevIntel.phishingLinks,
-              newIntel.phishingLinks,
-            ),
-            phoneNumbers: mergeArrays(
-              prevIntel.phoneNumbers,
-              newIntel.phoneNumbers,
-            ),
-            emailAddresses: mergeArrays(
-              prevIntel.emailAddresses,
-              newIntel.emailAddresses,
-            ),
-            suspiciousKeywords: mergeArrays(
-              prevIntel.suspiciousKeywords,
-              newIntel.suspiciousKeywords,
-            ),
-            scamType: newIntel.scamType || prevIntel.scamType,
-          },
-        };
-      });
+          // Helper to merge crypto wallets (by address)
+          const mergeCryptoWallets = (prev: any[] = [], next: any[] = []) => {
+            const map = new Map();
+            [...prev, ...next].forEach((wallet) => {
+              if (wallet?.address) map.set(wallet.address, wallet);
+            });
+            return Array.from(map.values());
+          };
 
-      // Determine Agent Status for Dashboard
-      if (responseData.internal_logic.scamDetected) {
-        setAgentStatus(AgentStatus.BAITING);
+          return {
+            ...prevState,
+            ...newLogic,
+            sessionId: prevState.sessionId, // Keep original session ID
+            scamDetected:
+              prevState.scamDetected || newLogic.scamDetected || false,
+            extractedIntelligence: {
+              cryptoWallets: mergeCryptoWallets(
+                prevIntel.cryptoWallets,
+                newIntel.cryptoWallets,
+              ),
+              bankAccounts: mergeArrays(
+                prevIntel.bankAccounts,
+                newIntel.bankAccounts,
+              ),
+              upiIds: mergeArrays(prevIntel.upiIds, newIntel.upiIds),
+              phishingLinks: mergeArrays(
+                prevIntel.phishingLinks,
+                newIntel.phishingLinks,
+              ),
+              phoneNumbers: mergeArrays(
+                prevIntel.phoneNumbers,
+                newIntel.phoneNumbers,
+              ),
+              emailAddresses: mergeArrays(
+                prevIntel.emailAddresses,
+                newIntel.emailAddresses,
+              ),
+              suspiciousKeywords: mergeArrays(
+                prevIntel.suspiciousKeywords,
+                newIntel.suspiciousKeywords,
+              ),
+              scamType: newIntel.scamType || prevIntel.scamType,
+            },
+          };
+        });
+
+        // Determine Agent Status for Dashboard
+        if (newLogic.scamDetected) {
+          setAgentStatus(AgentStatus.BAITING);
+        } else {
+          setAgentStatus(AgentStatus.IDLE);
+        }
+
+        if (newLogic.readyForFinalCallback) {
+          setAgentStatus(AgentStatus.REPORTING);
+        }
+      }
+
+      // Add Agent Reply to UI
+      if (
+        responseData.conversationHistory &&
+        responseData.conversationHistory.length > 0
+      ) {
+        // Convert DB history to ChatMessage format
+        const dbHistoryUpdates: ChatMessage[] =
+          responseData.conversationHistory.map((msg: any, index: number) => ({
+            id: `hist-${index}-${Date.now()}`,
+            sender: msg.sender === "scammer" ? "user" : "agent",
+            text: msg.text,
+            timestamp: new Date(msg.timestamp || Date.now()),
+          }));
+        setMessages(dbHistoryUpdates);
       } else {
-        setAgentStatus(AgentStatus.IDLE);
+        // Fallback: use direct reply field
+        const replyText =
+          responseData.reply ||
+          responseData.platform_reply?.reply ||
+          "No response";
+        const agentMsg: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          sender: "agent",
+          text: replyText,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, agentMsg]);
       }
-
-      if (responseData.internal_logic.readyForFinalCallback) {
-        setAgentStatus(AgentStatus.REPORTING);
-        console.log("CALLBACK TRIGGERED:", responseData.internal_logic);
-      }
-
-      // 5. Add Agent Reply to UI
-      const agentMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        sender: "agent",
-        text: responseData.platform_reply.reply,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, agentMsg]);
     } catch (error) {
       console.error("Transaction Failed:", error);
       // Fallback message if API fails (e.g., wrong key)
@@ -163,7 +247,16 @@ const App: React.FC = () => {
     <div className="flex h-screen w-full bg-gray-900">
       <div className="flex w-full h-full max-w-7xl mx-auto shadow-2xl overflow-hidden">
         {/* Left Side: The Chat Interface */}
-        <div className="w-full md:w-1/2 lg:w-2/5 h-full border-r border-gray-800">
+        <div className="w-full md:w-1/2 lg:w-2/5 h-full border-r border-gray-800 flex flex-col">
+          <div className="p-4 bg-gray-800 border-b border-gray-700 flex justify-between items-center">
+            <h2 className="text-white font-semibold">HoneyPot Chat</h2>
+            <button
+              onClick={handleNewChat}
+              className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition-colors"
+            >
+              New Chat
+            </button>
+          </div>
           <ChatInterface
             messages={messages}
             onSendMessage={handleUserMessage}

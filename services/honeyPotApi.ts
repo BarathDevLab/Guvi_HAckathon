@@ -5,7 +5,7 @@ interface ApiRequest {
   headers: Record<string, string>;
   body: {
     message: string;
-    history: ChatMessage[];
+    history?: ChatMessage[];
     sessionId: string;
   };
 }
@@ -25,16 +25,10 @@ interface ApiResponse<T> {
 export const handleApiRequest = async (
   request: ApiRequest,
 ): Promise<ApiResponse<HoneyPotResponse>> => {
-  // Log the activity to console
-  console.group("🔌 calling Backend API");
-
   const API_URL =
     import.meta.env.VITE_BACKEND_URL || "http://localhost:3000/api/chat";
 
-  console.log("Target:", API_URL);
-  console.groupEnd();
-
-  // 1. HEADER VALIDATION (Client-side pre-check, though backend handles the real check)
+  // Header validation (client-side pre-check)
   const providedKey = request.headers["x-api-key"];
   if (!providedKey) {
     return {

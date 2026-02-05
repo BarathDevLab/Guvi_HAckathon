@@ -36,8 +36,15 @@ export interface PlatformReply {
 }
 
 export interface HoneyPotResponse {
-  platform_reply: PlatformReply;
-  internal_logic: InternalLogicState;
+  status: string;
+  reply?: string;
+  platform_reply?: PlatformReply;
+  internal_logic?: InternalLogicState;
+  conversationHistory?: Array<{
+    sender: string;
+    text: string;
+    timestamp: number;
+  }>;
 }
 
 export enum AgentStatus {

@@ -75,7 +75,7 @@ export const sendMessageToHoneyPot = async (
   history: ChatMessage[],
   sessionId: string
 ): Promise<HoneyPotResponse> => {
-  
+
   // Convert chat history to Gemini format
   const chatHistory = history.map(msg => ({
     role: msg.sender === 'user' ? 'user' : 'model',
@@ -84,7 +84,7 @@ export const sendMessageToHoneyPot = async (
 
   try {
     const result = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemma-3-27b-it",
       contents: [
         ...chatHistory,
         { role: 'user', parts: [{ text: `[SessionID: ${sessionId}] Incoming Message: "${currentMessage}"` }] }

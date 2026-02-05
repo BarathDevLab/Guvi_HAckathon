@@ -36,7 +36,7 @@ if (AI_PROVIDER === "groq") {
     console.warn("⚠️ WARNING: GEMINI_API_KEY is missing in server/.env");
   }
   gemini = new GeminiProvider(process.env.GEMINI_API_KEY);
-  console.log("🤖 Using AI Provider: GEMINI (gemini-2.0-flash)");
+  console.log("🤖 Using AI Provider: GEMINI (gemma-3-27b-it)");
 }
 
 const SYSTEM_INSTRUCTION = `

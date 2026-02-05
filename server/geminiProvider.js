@@ -1,55 +1,62 @@
 /**
  * Gemini AI Provider
- * Uses Google's Gemini Gamma 3 27B model
+ * Uses Google's Gemma 3 27B model
  */
 
-const { GoogleGenerativeAI } = require("@google/genai");
+const { GoogleGenAI } = require("@google/genai");
 
 class GeminiProvider {
   constructor(apiKey) {
-    this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({
-      model: "gemma-3-27b-it",
-      generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0.7,
-        maxOutputTokens: 1024,
-      },
-    });
+    this.ai = new GoogleGenAI({ apiKey });
+    this.modelName = "gemma-3-27b-it";
   }
 
   async chat(systemPrompt, messages) {
     try {
-      // Build conversation history for Gemini
-      const history = messages.slice(0, -1).map((msg) => ({
-        role: msg.role === "user" ? "user" : "model",
-        parts: [{ text: msg.content }],
-      }));
+      // Convert OpenAI-style messages to Gemini 'contents'
+      // Filter out 'system' messages initially
+      let chatContents = messages
+        .filter((msg) => msg.role !== "system")
+        .map((msg) => ({
+          role: msg.role === "assistant" ? "model" : "user",
+          parts: [{ text: msg.content }],
+        }));
 
-      // Get the last user message
-      const lastMessage = messages[messages.length - 1];
+      // Ingest system prompt into the first message or prepend it
+      if (systemPrompt) {
+        if (chatContents.length > 0 && chatContents[0].role === "user") {
+          // Prepend to first user message
+          chatContents[0].parts[0].text = `System: ${systemPrompt}\n\nUser: ${chatContents[0].parts[0].text}`;
+        } else {
+          // Prepend a new user message
+          chatContents.unshift({
+            role: "user",
+            parts: [{ text: `System: ${systemPrompt}` }],
+          });
+        }
+      }
 
-      // Start chat with history
-      const chat = this.model.startChat({
-        history: [
-          { role: "user", parts: [{ text: "System: " + systemPrompt }] },
-          {
-            role: "model",
-            parts: [{ text: "Understood. I will follow these instructions." }],
-          },
-          ...history,
-        ],
+      const result = await this.ai.models.generateContent({
+        model: this.modelName,
+        contents: chatContents,
+        config: {
+          // systemInstruction removed as it is not supported for gemma-3-27b-it
+          // responseMimeType removed as it is not supported for gemma-3-27b-it
+          temperature: 0.7,
+          maxOutputTokens: 1024,
+        },
       });
 
-      // Send the current message
-      const result = await chat.sendMessage(lastMessage.content);
-      const responseText = result.response.text();
+      const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+      // Clean markdown code blocks (```json ... ```)
+      const cleanText = responseText.replace(/```json\n?|\n?```/g, "").trim();
 
       return {
         choices: [
           {
             message: {
-              content: responseText,
+              content: cleanText,
             },
           },
         ],
